@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -64,8 +65,15 @@ def relaunch_as_admin():
     ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, APP_DIR, 1)
 
 
+# Legacy (bis v1.1.0): Autostart ueber den HKCU Run-Key. Das loeste bei jedem
+# Windows-Start ein UAC-Fenster aus, weil die Anwendung Adminrechte braucht.
 AUTOSTART_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "MuteCurrentApplication"
+
+# Aktuell: geplante Aufgabe mit "hoechsten Rechten", die beim Anmelden startet.
+# Da die Aufgabe schon beim Anlegen als erhoeht markiert ist, fragt Windows
+# beim eigentlichen Start nicht erneut per UAC nach.
+AUTOSTART_TASK_NAME = "MuteCurrentApplication"
 
 
 def get_autostart_command():
@@ -74,7 +82,24 @@ def get_autostart_command():
     return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
 
 
-def is_autostart_enabled():
+def _run_hidden(args):
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
+def _remove_legacy_registry_autostart():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+    except OSError:
+        pass
+
+
+def _legacy_registry_autostart_enabled():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY_PATH, 0, winreg.KEY_READ) as key:
             winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
@@ -83,15 +108,27 @@ def is_autostart_enabled():
         return False
 
 
+def is_autostart_enabled():
+    result = _run_hidden(["schtasks", "/Query", "/TN", AUTOSTART_TASK_NAME])
+    if result.returncode == 0:
+        return True
+    return _legacy_registry_autostart_enabled()
+
+
 def set_autostart_enabled(enabled):
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
-        if enabled:
-            winreg.SetValueEx(key, AUTOSTART_VALUE_NAME, 0, winreg.REG_SZ, get_autostart_command())
-        else:
-            try:
-                winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
-            except FileNotFoundError:
-                pass
+    _remove_legacy_registry_autostart()
+    if enabled:
+        result = _run_hidden([
+            "schtasks", "/Create", "/TN", AUTOSTART_TASK_NAME,
+            "/TR", get_autostart_command(),
+            "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
+        ])
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "schtasks /Create fehlgeschlagen")
+    else:
+        result = _run_hidden(["schtasks", "/Delete", "/TN", AUTOSTART_TASK_NAME, "/F"])
+        if result.returncode != 0 and "cannot find" not in result.stderr.lower() and "kann nicht gefunden" not in result.stderr.lower():
+            raise RuntimeError(result.stderr.strip() or "schtasks /Delete fehlgeschlagen")
 
 
 DEFAULT_CONFIG = {

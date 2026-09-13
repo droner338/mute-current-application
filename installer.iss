@@ -1,5 +1,5 @@
 #define MyAppName "Mute Current Application"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "droner338"
 #define MyAppExeName "mute_current_application.exe"
 
