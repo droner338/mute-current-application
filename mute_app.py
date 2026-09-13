@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 import tkinter as tk
+import winreg
 from tkinter import messagebox, ttk
 
 import comtypes
@@ -61,6 +62,37 @@ def relaunch_as_admin():
     exe = sys.executable
     params = " ".join(f'"{a}"' for a in sys.argv)
     ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, APP_DIR, 1)
+
+
+AUTOSTART_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_VALUE_NAME = "MuteCurrentApplication"
+
+
+def get_autostart_command():
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+
+def is_autostart_enabled():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY_PATH, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
+        return True
+    except OSError:
+        return False
+
+
+def set_autostart_enabled(enabled):
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, AUTOSTART_VALUE_NAME, 0, winreg.REG_SZ, get_autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
 
 DEFAULT_CONFIG = {
     "toggle_mute_key": "f1",
@@ -182,7 +214,7 @@ def set_fixed_volume(icon, config):
             s.SimpleAudioVolume.SetMute(0, None)
 
         log.debug("set_fixed_volume: %s -> %d%%", proc_name, round(target_level * 100))
-        notify(icon, f"{proc_name}: Lautstaerke {round(target_level * 100)}%")
+        notify(icon, f"{proc_name}: Lautstärke {round(target_level * 100)}%")
     except Exception:
         log.exception("set_fixed_volume failed")
 
@@ -362,24 +394,29 @@ class SettingsUI:
 
         pad = {"padx": 10, "pady": 6}
 
-        ttk.Label(win, text="Taste fuer Stumm/Ton-Umschalten:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Label(win, text="Taste für Stumm/Ton-Umschalten:").grid(row=0, column=0, sticky="w", **pad)
         mute_var = tk.StringVar(value=self.config["toggle_mute_key"])
         ttk.Entry(win, textvariable=mute_var, width=20).grid(row=0, column=1, **pad)
 
-        ttk.Label(win, text="Taste fuer festen Lautstaerkewert:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(win, text="Taste für festen Lautstärkewert:").grid(row=1, column=0, sticky="w", **pad)
         fixed_key_var = tk.StringVar(value=self.config["fixed_volume_key"])
         ttk.Entry(win, textvariable=fixed_key_var, width=20).grid(row=1, column=1, **pad)
 
-        ttk.Label(win, text="Fester Lautstaerkewert (%):").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(win, text="Fester Lautstärkewert (%):").grid(row=2, column=0, sticky="w", **pad)
         volume_var = tk.StringVar(value=str(self.config["fixed_volume_percent"]))
         ttk.Entry(win, textvariable=volume_var, width=20).grid(row=2, column=1, **pad)
 
+        autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        ttk.Checkbutton(
+            win, text="Automatisch mit Windows starten", variable=autostart_var
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
+
         hint = ttk.Label(
             win,
-            text="Beispiele fuer Tastennamen: f1, f13, ctrl+f2, alt+m",
+            text="Beispiele für Tastennamen: f1, f13, ctrl+f2, alt+m",
             foreground="#666666",
         )
-        hint.grid(row=3, column=0, columnspan=2, sticky="w", padx=10)
+        hint.grid(row=4, column=0, columnspan=2, sticky="w", padx=10)
 
         def save():
             new_mute_key = mute_var.get().strip().lower()
@@ -387,13 +424,13 @@ class SettingsUI:
             try:
                 new_volume = int(volume_var.get().strip())
             except ValueError:
-                messagebox.showerror("Ungueltig", "Lautstaerkewert muss eine Zahl zwischen 0 und 100 sein.", parent=win)
+                messagebox.showerror("Ungültig", "Lautstärkewert muss eine Zahl zwischen 0 und 100 sein.", parent=win)
                 return
             if not (0 <= new_volume <= 100):
-                messagebox.showerror("Ungueltig", "Lautstaerkewert muss zwischen 0 und 100 liegen.", parent=win)
+                messagebox.showerror("Ungültig", "Lautstärkewert muss zwischen 0 und 100 liegen.", parent=win)
                 return
             if not new_mute_key or not new_fixed_key:
-                messagebox.showerror("Ungueltig", "Beide Tasten muessen gesetzt sein.", parent=win)
+                messagebox.showerror("Ungültig", "Beide Tasten müssen gesetzt sein.", parent=win)
                 return
 
             new_config = {
@@ -406,11 +443,16 @@ class SettingsUI:
             except Exception as e:
                 messagebox.showerror("Fehler", f"Hotkeys konnten nicht gesetzt werden:\n{e}", parent=win)
                 return
+            try:
+                set_autostart_enabled(autostart_var.get())
+            except Exception as e:
+                messagebox.showerror("Fehler", f"Autostart konnte nicht geändert werden:\n{e}", parent=win)
+                return
             self.config = new_config
             win.destroy()
 
         btn_frame = ttk.Frame(win)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=(10, 10))
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 10))
         ttk.Button(btn_frame, text="Speichern", command=save).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Abbrechen", command=win.destroy).pack(side="left", padx=5)
 
