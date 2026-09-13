@@ -1,0 +1,7 @@
+__pycache__/
+build/
+dist/
+*.spec
+mute_debug.log
+mute_current_application.exe
+installer/

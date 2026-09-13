@@ -1,0 +1,7 @@
+pycaw
+pystray
+pillow
+psutil
+pywin32
+comtypes
+pyinstaller
